@@ -1,0 +1,69 @@
+package com.victorcrypty.max
+
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.widget.Button
+import android.widget.TextView
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+
+class MainActivity : Activity() {
+
+    private lateinit var logView: TextView
+    private lateinit var statusView: TextView
+    private val handler = Handler(Looper.getMainLooper())
+    private val refresher = object : Runnable {
+        override fun run() {
+            logView.text = MaxLog.lines.joinToString("\n")
+            handler.postDelayed(this, 1000)
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        statusView = findViewById(R.id.statusView)
+        logView = findViewById(R.id.logView)
+        val toggleButton = findViewById<Button>(R.id.toggleButton)
+
+        requestNeededPermissions()
+
+        toggleButton.setOnClickListener {
+            val running = statusView.text.toString().contains("Listening")
+            if (running) {
+                stopService(Intent(this, ListenerService::class.java))
+                statusView.text = "Paused"
+            } else {
+                startListener()
+            }
+        }
+
+        handler.post(refresher)
+        startListener()
+    }
+
+    private fun startListener() {
+        startForegroundService(Intent(this, ListenerService::class.java))
+        statusView.text = "Listening..."
+    }
+
+    private fun requestNeededPermissions() {
+        val needed = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) {
+            needed.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        val missing = needed.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
+        }
+    }
+}
