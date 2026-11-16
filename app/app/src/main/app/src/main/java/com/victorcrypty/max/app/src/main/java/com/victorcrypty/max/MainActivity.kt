@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
@@ -33,7 +34,7 @@ class MainActivity : Activity() {
         logView = findViewById(R.id.logView)
         val toggleButton = findViewById<Button>(R.id.toggleButton)
 
-        requestNeededPermissions()
+        statusView.text = "Paused"
 
         toggleButton.setOnClickListener {
             val running = statusView.text.toString().contains("Listening")
@@ -46,12 +47,19 @@ class MainActivity : Activity() {
         }
 
         handler.post(refresher)
-        startListener()
+
+        // Ask for permission FIRST, and only start listening after it is granted.
+        requestNeededPermissions()
     }
 
     private fun startListener() {
-        startForegroundService(Intent(this, ListenerService::class.java))
-        statusView.text = "Listening..."
+        try {
+            startForegroundService(Intent(this, ListenerService::class.java))
+            statusView.text = "Listening..."
+        } catch (e: Exception) {
+            statusView.text = "Paused"
+            Toast.makeText(this, "Could not start listener: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun requestNeededPermissions() {
@@ -62,8 +70,22 @@ class MainActivity : Activity() {
         val missing = needed.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        if (missing.isNotEmpty()) {
+        if (missing.isEmpty()) {
+            // We already have all permissions, start right away.
+            startListener()
+        } else {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 1) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                startListener()
+            } else {
+                Toast.makeText(this, "Max needs the microphone permission to listen", Toast.LENGTH_LONG).show()
+            }
         }
     }
 }
