@@ -37,9 +37,8 @@ class ListenerService : Service(), RecognitionListener {
     private var wakeLock: PowerManager.WakeLock? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private val pendingSpeech = ArrayDeque<String>()
     private val handler = Handler(Looper.getMainLooper())
-
-    // One-response guard: remember the last command we acted on.
     private var lastCommand = ""
     private var lastActionAt = 0L
 
@@ -51,10 +50,21 @@ class ListenerService : Service(), RecognitionListener {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Max::listener")
         wakeLock?.acquire()
+        MaxLog.add("TTS: initializing...")
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                ttsReady = true
-                tts?.language = Locale.US
+                val result = tts?.setLanguage(Locale.US)
+                ttsReady = result != TextToSpeech.LANG_MISSING_DATA &&
+                        result != TextToSpeech.LANG_NOT_SUPPORTED
+                MaxLog.add("TTS: ready=$ttsReady langResult=$result")
+                // Speak anything that was requested before the engine was ready.
+                while (pendingSpeech.isNotEmpty()) {
+                    val t = pendingSpeech.removeFirst()
+                    MaxLog.add("TTS: speaking queued message")
+                    tts?.speak(t, TextToSpeech.QUEUE_ADD, null, "maxId")
+                }
+            } else {
+                MaxLog.add("TTS: FAILED to init, status=$status")
             }
         }
         MaxLog.add("Max service started")
@@ -62,7 +72,12 @@ class ListenerService : Service(), RecognitionListener {
     }
 
     private fun say(text: String) {
-        if (ttsReady) tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "maxId")
+        MaxLog.add("TTS asked to say: $text (ready=$ttsReady)")
+        if (ttsReady) {
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "maxId")
+        } else {
+            pendingSpeech.addLast(text)
+        }
     }
 
     private fun goForeground() {
@@ -120,8 +135,6 @@ class ListenerService : Service(), RecognitionListener {
             lower.substring(idx + 3).trim().removePrefix(",").trim()
         } else ""
 
-        // The guard: same command within 8 seconds only triggers once,
-        // and a growing partial (longer than lastCommand) is allowed through.
         val now = System.currentTimeMillis()
         val sameAsLast = command == lastCommand && (now - lastActionAt) < 8000
         val grewLonger = command.length > lastCommand.length
@@ -144,6 +157,9 @@ class ListenerService : Service(), RecognitionListener {
 
     private fun execute(command: String) {
         when {
+            command.contains("test voice") -> {
+                say("I can speak, loud and clear")
+            }
             command.contains("time") -> {
                 val time = SimpleDateFormat("h:mm a", Locale.US).format(Date())
                 MaxLog.add(">>> ACTION: time -> $time")
