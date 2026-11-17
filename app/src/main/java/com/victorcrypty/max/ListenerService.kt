@@ -46,19 +46,19 @@ class ListenerService : Service(), RecognitionListener {
     private fun isSummoned(): Boolean =
         System.currentTimeMillis() - summonedAt < 6000
 
+    // All the ways a recognizer might write "Victor".
+    private val wakeVariants = listOf(
+        "victor", "victory", "victoria", "victor's", "victors",
+        "viktor", "victo", "victa", "vector", "viktors"
+    )
+
     // Returns the position AFTER the wake word in the sentence, or -1.
-    // Safe: never returns a position beyond the sentence length.
     private fun findWakeWord(lower: String): Int {
         val words = lower.split(" ")
         var pos = 0
         for (i in words.indices) {
             val w = words[i].trim(',', '.', '!', '?', '-')
-            val isMax =
-                w == "max" || w == "marks" || w == "mark" || w == "mac" ||
-                w == "macs" || w == "mass" || w == "maps" || w == "macks" ||
-                w == "max's" || w == "mark's" || w == "mac's" || w == "maxx" ||
-                w == "maxes" || w == "tasks" || w == "tax"
-            if (isMax) {
+            if (wakeVariants.contains(w)) {
                 val after = pos + words[i].length + 1
                 return if (after <= lower.length) after else lower.length
             }
@@ -157,7 +157,7 @@ class ListenerService : Service(), RecognitionListener {
                 } else ""
                 if (command.isNotEmpty()) {
                     execute(command)
-                } else if (isFinal || lower == "max" || lower == "marks") {
+                } else if (isFinal || lower == "victor" || lower == "victory") {
                     MaxLog.add(">>> WAKE WORD, waiting for command")
                     say("Yes?")
                 }
@@ -247,4 +247,4 @@ class ListenerService : Service(), RecognitionListener {
         wakeLock?.release()
         super.onDestroy()
     }
-}
+}q
