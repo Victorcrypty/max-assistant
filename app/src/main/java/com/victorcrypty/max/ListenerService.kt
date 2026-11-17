@@ -16,7 +16,7 @@ import android.os.PowerManager
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import androidx.core.content.ContextCompat
+import android.speech.tts.TextToSpeech
 import java.util.Locale
 
 object MaxLog {
@@ -31,22 +31,30 @@ class ListenerService : Service(), RecognitionListener {
 
     private var recognizer: SpeechRecognizer? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
     private val handler = Handler(Looper.getMainLooper())
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        try {
-            goForeground()
-        } catch (e: Exception) {
-            MaxLog.add("foreground warning: ${e.message}")
-        }
+        goForeground()
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Max::listener")
         wakeLock?.acquire()
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                ttsReady = true
+                tts?.language = Locale.US
+            }
+        }
         MaxLog.add("Max service started")
         restartListening()
+    }
+
+    private fun say(text: String) {
+        if (ttsReady) tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "maxId")
     }
 
     private fun goForeground() {
@@ -59,16 +67,7 @@ class ListenerService : Service(), RecognitionListener {
             .setContentTitle("Max is listening")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .build()
-        if (hasMicPermission()) {
-            if (Build.VERSION.SDK_INT >= 30) {
-                startForeground(1, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-            } else {
-                startForeground(1, notif)
-            }
-        } else {
-            MaxLog.add("no mic permission yet, waiting")
-            startForeground(1, notif)
-        }
+        startForeground(1, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
     }
 
     private fun hasMicPermission(): Boolean {
@@ -79,12 +78,12 @@ class ListenerService : Service(), RecognitionListener {
 
     private fun restartListening() {
         if (!hasMicPermission()) {
-            MaxLog.add("still no mic permission, retrying in 3s")
+            MaxLog.add("no mic permission yet, retrying in 3s")
             handler.postDelayed({ restartListening() }, 3000)
             return
         }
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            MaxLog.add("ERROR: speech recognition not available on this device")
+            MaxLog.add("ERROR: speech recognition not available")
             return
         }
         try {
@@ -93,8 +92,12 @@ class ListenerService : Service(), RecognitionListener {
                 setRecognitionListener(this@ListenerService)
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                    // Keep each listening window open much longer before giving up.
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 10000)
                 }
                 startListening(intent)
             }
@@ -104,10 +107,23 @@ class ListenerService : Service(), RecognitionListener {
     }
 
     private fun handleText(text: String) {
-        val lower = text.lowercase()
+        val lower = text.lowercase().trim()
         MaxLog.add(text)
+
         if (lower.contains("max")) {
-            MaxLog.add(">>> WAKE WORD HEARD <<<")
+            // Take whatever came AFTER the word max as the command.
+            val idx = lower.indexOf("max")
+            var command = ""
+            if (idx >= 0 && lower.length > idx + 3) {
+                command = lower.substring(idx + 3).trim()
+            }
+            if (command.isEmpty()) {
+                MaxLog.add(">>> WAKE WORD HEARD, waiting for command...")
+                say("Yes?")
+            } else {
+                MaxLog.add(">>> COMMAND: $command")
+                say("Command received: $command")
+            }
         }
     }
 
@@ -123,7 +139,19 @@ class ListenerService : Service(), RecognitionListener {
     }
 
     override fun onError(error: Int) {
-        MaxLog.add("listener error code $error, restarting in 2s")
+        val why = when (error) {
+            1 -> "network timeout"
+            2 -> "network error"
+            3 -> "audio error"
+            4 -> "server error"
+            5 -> "client error"
+            6 -> "speech timeout"
+            7 -> "no match"
+            8 -> "recognizer busy"
+            9 -> "insufficient permissions"
+            else -> "error $error"
+        }
+        MaxLog.add("listener: $why, retrying in 2s")
         handler.postDelayed({ restartListening() }, 2000)
     }
 
@@ -136,6 +164,7 @@ class ListenerService : Service(), RecognitionListener {
 
     override fun onDestroy() {
         recognizer?.destroy()
+        tts?.shutdown()
         wakeLock?.release()
         super.onDestroy()
     }
