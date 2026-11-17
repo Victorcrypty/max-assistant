@@ -6,10 +6,12 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.os.BatteryManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -46,13 +48,11 @@ class ListenerService : Service(), RecognitionListener {
     private fun isSummoned(): Boolean =
         System.currentTimeMillis() - summonedAt < 6000
 
-    // All the ways a recognizer might write "Victor".
     private val wakeVariants = listOf(
         "victor", "victory", "victoria", "victor's", "victors",
         "viktor", "victo", "victa", "vector", "viktors"
     )
 
-    // Returns the position AFTER the wake word in the sentence, or -1.
     private fun findWakeWord(lower: String): Int {
         val words = lower.split(" ")
         var pos = 0
@@ -180,21 +180,101 @@ class ListenerService : Service(), RecognitionListener {
         lastCommand = command
         lastActionAt = System.currentTimeMillis()
         when {
-            command.contains("time") -> {
+            command.contains("what can you do") || command.contains("help") -> {
+                say("I can tell the time and date, check the battery, " +
+                    "turn the flashlight on or off, and open apps. " +
+                    "Just say Victor, then tell me what to do.")
+            }
+            command.contains("time") && !command.contains("timer") -> {
                 val time = SimpleDateFormat("h:mm a", Locale.US).format(Date())
                 MaxLog.add(">>> ACTION: time -> $time")
                 say("It's $time")
             }
+            command.contains("date") || command.contains("today") -> {
+                val date = SimpleDateFormat("EEEE, MMMM d, yyyy", Locale.US).format(Date())
+                MaxLog.add(">>> ACTION: date -> $date")
+                say("Today is $date")
+            }
+            command.contains("battery") -> {
+                say("Battery is at ${getBatteryPercent()} percent.")
+            }
             command.contains("flashlight") || command.contains("torch") -> {
                 if (command.contains("off")) setTorch(false) else setTorch(true)
             }
-            command.contains("open") -> {
-                say("Opening apps comes in the next build")
+            command.startsWith("open") || command.contains("open ") -> {
+                openApp(command)
             }
             else -> {
                 MaxLog.add(">>> COMMAND: $command")
                 say("I heard: $command. I can't do that one yet.")
             }
+        }
+    }
+
+    private fun getBatteryPercent(): Int {
+        return try {
+            val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            if (level >= 0 && scale > 0) (level * 100) / scale else -1
+        } catch (e: Exception) {
+            -1
+        }.also {
+            if (it == -1) MaxLog.add("battery read failed")
+        }
+    }
+
+    private fun openApp(command: String) {
+        try {
+            // The name of the app is whatever came after the word "open".
+            val target = command.replace("open", " ").trim()
+            if (target.isEmpty()) {
+                say("Open what?")
+                return
+            }
+            val pm = packageManager
+            val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            val activities = pm.queryIntentActivities(launcherIntent, 0)
+
+            // Some common spoken names map straight to packages.
+            val known = mapOf(
+                "whatsapp" to "com.whatsapp",
+                "youtube" to "com.google.android.youtube",
+                "instagram" to "com.instagram.android",
+                "telegram" to "org.telegram.messenger",
+                "camera" to "camera",
+                "chrome" to "com.android.chrome",
+                "gmail" to "com.google.android.gm",
+                "maps" to "com.google.android.maps",
+                "spotify" to "com.spotify.music",
+                "x" to "com.twitter.android",
+                "twitter" to "com.twitter.android"
+            )
+            val pkg = known[target.removePrefix("the ").trim()] ?: ""
+            if (pkg.isNotEmpty() && pkg != "camera") {
+                val launch = pm.getLaunchIntentForPackage(pkg)
+                if (launch != null) {
+                    startActivity(launch)
+                    say("Opening $target")
+                    return
+                }
+            }
+
+            // Otherwise search installed app LABELS for the spoken word.
+            val match = activities.firstOrNull {
+                it.loadLabel(pm).toString().lowercase().contains(target) ||
+                target.contains(it.loadLabel(pm).toString().lowercase())
+            }
+            if (match != null) {
+                startActivity(pm.getLaunchIntentForPackage(match.activityInfo.packageName))
+                say("Opening ${match.loadLabel(pm)}")
+            } else {
+                MaxLog.add(">>> no app found for: $target")
+                say("I couldn't find an app called $target")
+            }
+        } catch (e: Exception) {
+            MaxLog.add("open failed: ${e.message}")
+            say("I couldn't open that app")
         }
     }
 
