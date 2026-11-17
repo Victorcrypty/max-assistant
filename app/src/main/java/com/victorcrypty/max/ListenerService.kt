@@ -10,7 +10,6 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -38,8 +37,11 @@ class ListenerService : Service(), RecognitionListener {
     private var wakeLock: PowerManager.WakeLock? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private var torchOn = false
     private val handler = Handler(Looper.getMainLooper())
+
+    // One-response guard: remember the last command we acted on.
+    private var lastCommand = ""
+    private var lastActionAt = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -100,9 +102,6 @@ class ListenerService : Service(), RecognitionListener {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 10000)
                 }
                 startListening(intent)
             }
@@ -111,29 +110,40 @@ class ListenerService : Service(), RecognitionListener {
         }
     }
 
-    private fun handlePartial(text: String) {
-        // Partials are only shown in the log, never acted on.
-        MaxLog.add(text)
-    }
-
-    private fun handleFinal(text: String) {
+    private fun handleText(text: String, isFinal: Boolean) {
         val lower = text.lowercase().trim()
-        MaxLog.add("FINAL: $text")
+        MaxLog.add(if (isFinal) "FINAL: $text" else text)
         if (!lower.contains("max")) return
 
         val idx = lower.indexOf("max")
         val command = if (idx >= 0 && lower.length > idx + 3) {
-            lower.substring(idx + 3).trim()
+            lower.substring(idx + 3).trim().removePrefix(",").trim()
         } else ""
-        execute(command.ifEmpty { "just wake word" })
+
+        // The guard: same command within 8 seconds only triggers once,
+        // and a growing partial (longer than lastCommand) is allowed through.
+        val now = System.currentTimeMillis()
+        val sameAsLast = command == lastCommand && (now - lastActionAt) < 8000
+        val grewLonger = command.length > lastCommand.length
+        if (sameAsLast && !grewLonger) return
+
+        if (command.isEmpty()) {
+            if (isFinal || lower == "max" || lower.endsWith("max")) {
+                lastCommand = ""
+                lastActionAt = now
+                MaxLog.add(">>> WAKE WORD, no command")
+                say("Yes?")
+            }
+            return
+        }
+
+        lastCommand = command
+        lastActionAt = now
+        execute(command)
     }
 
     private fun execute(command: String) {
         when {
-            command == "just wake word" -> {
-                MaxLog.add(">>> WAKE WORD, no command")
-                say("Yes?")
-            }
             command.contains("time") -> {
                 val time = SimpleDateFormat("h:mm a", Locale.US).format(Date())
                 MaxLog.add(">>> ACTION: time -> $time")
@@ -159,7 +169,6 @@ class ListenerService : Service(), RecognitionListener {
                 cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             }
             cm.setTorchMode(cameraId, on)
-            torchOn = on
             MaxLog.add(">>> ACTION: flashlight ${if (on) "ON" else "OFF"}")
             say("Flashlight ${if (on) "on" else "off"}")
         } catch (e: Exception) {
@@ -170,12 +179,12 @@ class ListenerService : Service(), RecognitionListener {
 
     override fun onPartialResults(partialResults: android.os.Bundle) {
         val results = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-        results?.firstOrNull()?.let { handlePartial(it) }
+        results?.firstOrNull()?.let { handleText(it, false) }
     }
 
     override fun onResults(results: android.os.Bundle) {
         val texts = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-        texts?.firstOrNull()?.let { handleFinal(it) }
+        texts?.firstOrNull()?.let { handleText(it, true) }
         restartListening()
     }
 
