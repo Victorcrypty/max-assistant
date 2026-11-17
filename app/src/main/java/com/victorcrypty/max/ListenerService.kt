@@ -17,6 +17,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import androidx.core.content.ContextCompat
 import java.util.Locale
 
 object MaxLog {
@@ -94,7 +95,6 @@ class ListenerService : Service(), RecognitionListener {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                    // Keep each listening window open much longer before giving up.
                     putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000)
                     putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000)
                     putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 10000)
@@ -111,7 +111,6 @@ class ListenerService : Service(), RecognitionListener {
         MaxLog.add(text)
 
         if (lower.contains("max")) {
-            // Take whatever came AFTER the word max as the command.
             val idx = lower.indexOf("max")
             var command = ""
             if (idx >= 0 && lower.length > idx + 3) {
