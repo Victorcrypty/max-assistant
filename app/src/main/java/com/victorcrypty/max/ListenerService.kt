@@ -247,4 +247,4 @@ class ListenerService : Service(), RecognitionListener {
         wakeLock?.release()
         super.onDestroy()
     }
-}q
+}
