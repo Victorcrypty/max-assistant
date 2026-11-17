@@ -44,7 +44,10 @@ class ListenerService : Service(), RecognitionListener {
     private var summonedAt = 0L
 
     // Words the recognizer commonly produces for "Max".
-    private val wakeVariants = listOf("max", "marks", "mark's", "macs", "mac's", "mass", "mac", "maps", "max's", "task", "tax", "macks")
+    private val wakeVariants = listOf(
+        "max", "marks", "mark's", "macs", "mac's", "mass",
+        "mac", "maps", "max's", "macks", "maxx", "max-"
+    )
 
     private fun isSummoned(): Boolean =
         System.currentTimeMillis() - summonedAt < 6000
@@ -52,14 +55,16 @@ class ListenerService : Service(), RecognitionListener {
     // Returns the position AFTER the wake word in the sentence, or -1.
     private fun findWakeWord(lower: String): Int {
         val words = lower.split(" ")
+        var pos = 0
         for (i in words.indices) {
-            val w = words[i].trim(',', '.', '!', '?')
-            if (wakeVariants.any { w == it || (it == "max" && w.length > 3 && w.startsWith("max")) }) {
-                // Position after this word in the ORIGINAL string.
-                var pos = 0
-                for (j in 0 until i) pos += words[j].length + 1
-                return pos + words[i].length + 1
+            val w = words[i].trim(',', '.', '!', '?', '-')
+            val isMax = wakeVariants.any {
+                w == it || (w.startsWith("max") && w.length <= 5) ||
+                (w.startsWith("mac") && w.length <= 4) ||
+                (w.startsWith("mar") && w.length <= 5)
             }
+            if (isMax) return pos + words[i].length + 1
+            pos += words[i].length + 1
         }
         return -1
     }
@@ -132,7 +137,6 @@ class ListenerService : Service(), RecognitionListener {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                    putExtra(RecognizerIntent.EXTRA_PREFER_LOWER_QUALITY, true)
                 }
                 startListening(intent)
             }
