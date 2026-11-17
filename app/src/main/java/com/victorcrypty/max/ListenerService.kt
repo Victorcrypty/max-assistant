@@ -43,27 +43,25 @@ class ListenerService : Service(), RecognitionListener {
     private var lastActionAt = 0L
     private var summonedAt = 0L
 
-    // Words the recognizer commonly produces for "Max".
-    private val wakeVariants = listOf(
-        "max", "marks", "mark's", "macs", "mac's", "mass",
-        "mac", "maps", "max's", "macks", "maxx", "max-"
-    )
-
     private fun isSummoned(): Boolean =
         System.currentTimeMillis() - summonedAt < 6000
 
     // Returns the position AFTER the wake word in the sentence, or -1.
+    // Safe: never returns a position beyond the sentence length.
     private fun findWakeWord(lower: String): Int {
         val words = lower.split(" ")
         var pos = 0
         for (i in words.indices) {
             val w = words[i].trim(',', '.', '!', '?', '-')
-            val isMax = wakeVariants.any {
-                w == it || (w.startsWith("max") && w.length <= 5) ||
-                (w.startsWith("mac") && w.length <= 4) ||
-                (w.startsWith("mar") && w.length <= 5)
+            val isMax =
+                w == "max" || w == "marks" || w == "mark" || w == "mac" ||
+                w == "macs" || w == "mass" || w == "maps" || w == "macks" ||
+                w == "max's" || w == "mark's" || w == "mac's" || w == "maxx" ||
+                w == "maxes" || w == "tasks" || w == "tax"
+            if (isMax) {
+                val after = pos + words[i].length + 1
+                return if (after <= lower.length) after else lower.length
             }
-            if (isMax) return pos + words[i].length + 1
             pos += words[i].length + 1
         }
         return -1
@@ -146,29 +144,35 @@ class ListenerService : Service(), RecognitionListener {
     }
 
     private fun handleText(text: String, isFinal: Boolean) {
-        val lower = text.lowercase().trim()
-        MaxLog.add(if (isFinal) "FINAL: $text" else text)
-        val now = System.currentTimeMillis()
+        try {
+            val lower = text.lowercase().trim()
+            MaxLog.add(if (isFinal) "FINAL: $text" else text)
+            val now = System.currentTimeMillis()
 
-        val wakePos = findWakeWord(lower)
-        if (wakePos >= 0) {
-            summonedAt = now
-            val command = lower.substring(wakePos).trim().removePrefix(",").trim()
-            if (command.isNotEmpty()) {
-                execute(command)
-            } else if (isFinal || lower.endsWith("max") || lower.endsWith("marks")) {
-                MaxLog.add(">>> WAKE WORD, waiting for command")
-                say("Yes?")
+            val wakePos = findWakeWord(lower)
+            if (wakePos >= 0) {
+                summonedAt = now
+                val command = if (wakePos < lower.length) {
+                    lower.substring(wakePos).trim().removePrefix(",").trim()
+                } else ""
+                if (command.isNotEmpty()) {
+                    execute(command)
+                } else if (isFinal || lower == "max" || lower == "marks") {
+                    MaxLog.add(">>> WAKE WORD, waiting for command")
+                    say("Yes?")
+                }
+                return
             }
-            return
-        }
 
-        if (isSummoned() && lower.isNotEmpty()) {
-            val sameAsLast = lower == lastCommand && (now - lastActionAt) < 8000
-            if (!sameAsLast) {
-                summonedAt = 0L
-                execute(lower)
+            if (isSummoned() && lower.isNotEmpty()) {
+                val sameAsLast = lower == lastCommand && (now - lastActionAt) < 8000
+                if (!sameAsLast) {
+                    summonedAt = 0L
+                    execute(lower)
+                }
             }
+        } catch (e: Exception) {
+            MaxLog.add("handler error (kept alive): ${e.message}")
         }
     }
 
