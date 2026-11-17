@@ -41,6 +41,28 @@ class ListenerService : Service(), RecognitionListener {
     private val handler = Handler(Looper.getMainLooper())
     private var lastCommand = ""
     private var lastActionAt = 0L
+    private var summonedAt = 0L
+
+    // Words the recognizer commonly produces for "Max".
+    private val wakeVariants = listOf("max", "marks", "mark's", "macs", "mac's", "mass", "mac", "maps", "max's", "task", "tax", "macks")
+
+    private fun isSummoned(): Boolean =
+        System.currentTimeMillis() - summonedAt < 6000
+
+    // Returns the position AFTER the wake word in the sentence, or -1.
+    private fun findWakeWord(lower: String): Int {
+        val words = lower.split(" ")
+        for (i in words.indices) {
+            val w = words[i].trim(',', '.', '!', '?')
+            if (wakeVariants.any { w == it || (it == "max" && w.length > 3 && w.startsWith("max")) }) {
+                // Position after this word in the ORIGINAL string.
+                var pos = 0
+                for (j in 0 until i) pos += words[j].length + 1
+                return pos + words[i].length + 1
+            }
+        }
+        return -1
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -50,21 +72,15 @@ class ListenerService : Service(), RecognitionListener {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Max::listener")
         wakeLock?.acquire()
-        MaxLog.add("TTS: initializing...")
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 val result = tts?.setLanguage(Locale.US)
                 ttsReady = result != TextToSpeech.LANG_MISSING_DATA &&
                         result != TextToSpeech.LANG_NOT_SUPPORTED
-                MaxLog.add("TTS: ready=$ttsReady langResult=$result")
-                // Speak anything that was requested before the engine was ready.
+                MaxLog.add("TTS: ready=$ttsReady")
                 while (pendingSpeech.isNotEmpty()) {
-                    val t = pendingSpeech.removeFirst()
-                    MaxLog.add("TTS: speaking queued message")
-                    tts?.speak(t, TextToSpeech.QUEUE_ADD, null, "maxId")
+                    tts?.speak(pendingSpeech.removeFirst(), TextToSpeech.QUEUE_ADD, null, "maxId")
                 }
-            } else {
-                MaxLog.add("TTS: FAILED to init, status=$status")
             }
         }
         MaxLog.add("Max service started")
@@ -72,7 +88,6 @@ class ListenerService : Service(), RecognitionListener {
     }
 
     private fun say(text: String) {
-        MaxLog.add("TTS asked to say: $text (ready=$ttsReady)")
         if (ttsReady) {
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "maxId")
         } else {
@@ -117,6 +132,7 @@ class ListenerService : Service(), RecognitionListener {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                    putExtra(RecognizerIntent.EXTRA_PREFER_LOWER_QUALITY, true)
                 }
                 startListening(intent)
             }
@@ -128,38 +144,34 @@ class ListenerService : Service(), RecognitionListener {
     private fun handleText(text: String, isFinal: Boolean) {
         val lower = text.lowercase().trim()
         MaxLog.add(if (isFinal) "FINAL: $text" else text)
-        if (!lower.contains("max")) return
-
-        val idx = lower.indexOf("max")
-        val command = if (idx >= 0 && lower.length > idx + 3) {
-            lower.substring(idx + 3).trim().removePrefix(",").trim()
-        } else ""
-
         val now = System.currentTimeMillis()
-        val sameAsLast = command == lastCommand && (now - lastActionAt) < 8000
-        val grewLonger = command.length > lastCommand.length
-        if (sameAsLast && !grewLonger) return
 
-        if (command.isEmpty()) {
-            if (isFinal || lower == "max" || lower.endsWith("max")) {
-                lastCommand = ""
-                lastActionAt = now
-                MaxLog.add(">>> WAKE WORD, no command")
+        val wakePos = findWakeWord(lower)
+        if (wakePos >= 0) {
+            summonedAt = now
+            val command = lower.substring(wakePos).trim().removePrefix(",").trim()
+            if (command.isNotEmpty()) {
+                execute(command)
+            } else if (isFinal || lower.endsWith("max") || lower.endsWith("marks")) {
+                MaxLog.add(">>> WAKE WORD, waiting for command")
                 say("Yes?")
             }
             return
         }
 
-        lastCommand = command
-        lastActionAt = now
-        execute(command)
+        if (isSummoned() && lower.isNotEmpty()) {
+            val sameAsLast = lower == lastCommand && (now - lastActionAt) < 8000
+            if (!sameAsLast) {
+                summonedAt = 0L
+                execute(lower)
+            }
+        }
     }
 
     private fun execute(command: String) {
+        lastCommand = command
+        lastActionAt = System.currentTimeMillis()
         when {
-            command.contains("test voice") -> {
-                say("I can speak, loud and clear")
-            }
             command.contains("time") -> {
                 val time = SimpleDateFormat("h:mm a", Locale.US).format(Date())
                 MaxLog.add(">>> ACTION: time -> $time")
