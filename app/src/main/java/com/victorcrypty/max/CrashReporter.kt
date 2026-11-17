@@ -7,12 +7,15 @@ object CrashReporter {
     fun install(context: Context) {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
-            try {
-                File(context.filesDir, "last_crash.txt").writeText(e.stackTraceToString())
-            } catch (_: Exception) {
-            }
+            record(context, e)
             previous?.uncaughtException(t, e)
         }
+    }
+
+    fun record(context: Context, e: Throwable) {
+        try {
+            File(context.filesDir, "last_crash.txt").writeText(e.stackTraceToString())
+        } catch (_: Exception) {}
     }
 
     fun lastCrash(context: Context): String? {
