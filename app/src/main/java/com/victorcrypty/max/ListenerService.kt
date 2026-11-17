@@ -8,6 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -18,6 +20,8 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import androidx.core.content.ContextCompat
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 object MaxLog {
@@ -34,6 +38,7 @@ class ListenerService : Service(), RecognitionListener {
     private var wakeLock: PowerManager.WakeLock? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private var torchOn = false
     private val handler = Handler(Looper.getMainLooper())
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -55,7 +60,7 @@ class ListenerService : Service(), RecognitionListener {
     }
 
     private fun say(text: String) {
-        if (ttsReady) tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "maxId")
+        if (ttsReady) tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "maxId")
     }
 
     private fun goForeground() {
@@ -106,48 +111,78 @@ class ListenerService : Service(), RecognitionListener {
         }
     }
 
-    private fun handleText(text: String) {
-        val lower = text.lowercase().trim()
+    private fun handlePartial(text: String) {
+        // Partials are only shown in the log, never acted on.
         MaxLog.add(text)
+    }
 
-        if (lower.contains("max")) {
-            val idx = lower.indexOf("max")
-            var command = ""
-            if (idx >= 0 && lower.length > idx + 3) {
-                command = lower.substring(idx + 3).trim()
-            }
-            if (command.isEmpty()) {
-                MaxLog.add(">>> WAKE WORD HEARD, waiting for command...")
+    private fun handleFinal(text: String) {
+        val lower = text.lowercase().trim()
+        MaxLog.add("FINAL: $text")
+        if (!lower.contains("max")) return
+
+        val idx = lower.indexOf("max")
+        val command = if (idx >= 0 && lower.length > idx + 3) {
+            lower.substring(idx + 3).trim()
+        } else ""
+        execute(command.ifEmpty { "just wake word" })
+    }
+
+    private fun execute(command: String) {
+        when {
+            command == "just wake word" -> {
+                MaxLog.add(">>> WAKE WORD, no command")
                 say("Yes?")
-            } else {
-                MaxLog.add(">>> COMMAND: $command")
-                say("Command received: $command")
             }
+            command.contains("time") -> {
+                val time = SimpleDateFormat("h:mm a", Locale.US).format(Date())
+                MaxLog.add(">>> ACTION: time -> $time")
+                say("It's $time")
+            }
+            command.contains("flashlight") || command.contains("torch") -> {
+                if (command.contains("off")) setTorch(false) else setTorch(true)
+            }
+            command.contains("open") -> {
+                say("Opening apps comes in the next build")
+            }
+            else -> {
+                MaxLog.add(">>> COMMAND: $command")
+                say("I heard: $command. I can't do that one yet.")
+            }
+        }
+    }
+
+    private fun setTorch(on: Boolean) {
+        try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val cameraId = cm.cameraIdList.first {
+                cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            }
+            cm.setTorchMode(cameraId, on)
+            torchOn = on
+            MaxLog.add(">>> ACTION: flashlight ${if (on) "ON" else "OFF"}")
+            say("Flashlight ${if (on) "on" else "off"}")
+        } catch (e: Exception) {
+            MaxLog.add("flashlight failed: ${e.message}")
+            say("I couldn't reach the flashlight")
         }
     }
 
     override fun onPartialResults(partialResults: android.os.Bundle) {
         val results = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-        results?.firstOrNull()?.let { handleText(it) }
+        results?.firstOrNull()?.let { handlePartial(it) }
     }
 
     override fun onResults(results: android.os.Bundle) {
         val texts = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-        texts?.firstOrNull()?.let { handleText(it) }
+        texts?.firstOrNull()?.let { handleFinal(it) }
         restartListening()
     }
 
     override fun onError(error: Int) {
         val why = when (error) {
-            1 -> "network timeout"
-            2 -> "network error"
-            3 -> "audio error"
-            4 -> "server error"
-            5 -> "client error"
-            6 -> "speech timeout"
             7 -> "no match"
-            8 -> "recognizer busy"
-            9 -> "insufficient permissions"
+            11 -> "busy"
             else -> "error $error"
         }
         MaxLog.add("listener: $why, retrying in 2s")
