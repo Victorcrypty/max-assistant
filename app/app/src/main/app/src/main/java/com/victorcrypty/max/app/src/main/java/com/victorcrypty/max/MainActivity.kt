@@ -28,6 +28,15 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Black box recorder: catch any crash and store it for reading later.
+        CrashReporter.install(this)
+        CrashReporter.lastCrash(this)?.let {
+            MaxLog.add("LAST CRASH:")
+            MaxLog.add(it)
+            CrashReporter.clear(this)
+        }
+
         setContentView(R.layout.activity_main)
 
         statusView = findViewById(R.id.statusView)
@@ -71,7 +80,6 @@ class MainActivity : Activity() {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
         if (missing.isEmpty()) {
-            // We already have all permissions, start right away.
             startListener()
         } else {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
