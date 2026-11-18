@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -38,8 +39,8 @@ class MainActivity : Activity() {
             CrashReporter.clear(this)
         }
 
-        val layout = android.widget.LinearLayout(this)
-        layout.orientation = android.widget.LinearLayout.VERTICAL
+        val layout = LinearLayout(this)
+        layout.orientation = LinearLayout.VERTICAL
         layout.setPadding(32, 32, 32, 32)
 
         statusView = TextView(this).apply {
@@ -85,7 +86,11 @@ class MainActivity : Activity() {
 
     private fun requestNeededPermissions() {
         try {
-            val needed = mutableListOf(Manifest.permission.RECORD_AUDIO)
+            val needed = mutableListOf(
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.READ_CONTACTS,
+                Manifest.permission.CALL_PHONE
+            )
             if (Build.VERSION.SDK_INT >= 33) {
                 needed.add(Manifest.permission.POST_NOTIFICATIONS)
             }
@@ -103,7 +108,7 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 1 && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(this, "Mic ready. Tap the button to start listening.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Permissions ready. Tap the button to start listening.", Toast.LENGTH_LONG).show()
         }
     }
 }
