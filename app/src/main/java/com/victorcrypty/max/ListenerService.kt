@@ -9,13 +9,16 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.database.Cursor
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.net.Uri
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.ContactsContract
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -111,14 +114,12 @@ class ListenerService : Service(), RecognitionListener {
         startForeground(1, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
     }
 
-    private fun hasMicPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            this, android.Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
+    private fun hasPermission(p: String): Boolean {
+        return ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun restartListening() {
-        if (!hasMicPermission()) {
+        if (!hasPermission(android.Manifest.permission.RECORD_AUDIO)) {
             MaxLog.add("no mic permission yet, retrying in 3s")
             handler.postDelayed({ restartListening() }, 3000)
             return
@@ -182,8 +183,11 @@ class ListenerService : Service(), RecognitionListener {
         when {
             command.contains("what can you do") || command.contains("help") -> {
                 say("I can tell the time and date, check the battery, " +
-                    "turn the flashlight on or off, and open apps. " +
-                    "Just say Victor, then tell me what to do.")
+                    "turn the flashlight on or off, open apps, " +
+                    "and call people in your contacts.")
+            }
+            (command.startsWith("call") || command.contains(" call ")) -> {
+                callContact(command)
             }
             command.contains("time") && !command.contains("timer") -> {
                 val time = SimpleDateFormat("h:mm a", Locale.US).format(Date())
@@ -196,7 +200,8 @@ class ListenerService : Service(), RecognitionListener {
                 say("Today is $date")
             }
             command.contains("battery") -> {
-                say("Battery is at ${getBatteryPercent()} percent.")
+                val pct = getBatteryPercent()
+                say(if (pct >= 0) "Battery is at $pct percent." else "I couldn't read the battery.")
             }
             command.contains("flashlight") || command.contains("torch") -> {
                 if (command.contains("off")) setTorch(false) else setTorch(true)
@@ -211,6 +216,58 @@ class ListenerService : Service(), RecognitionListener {
         }
     }
 
+    private fun callContact(command: String) {
+        if (!hasPermission(android.Manifest.permission.READ_CONTACTS)) {
+            say("I need the contacts permission. Open the app and grant it.")
+            return
+        }
+        // The name is whatever follows the word "call".
+        val name = command.replace("call", " ").trim(',', '.', '!').trim()
+        if (name.isEmpty()) {
+            say("Call who?")
+            return
+        }
+        var number: String? = null
+        var foundName: String? = null
+        try {
+            val cursor: Cursor? = contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                arrayOf(
+                    ContactsContract.CommonDataKinds.Phone.NUMBER,
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
+                ),
+                null, null, null
+            )
+            cursor?.use { c ->
+                while (c.moveToNext()) {
+                    val n = c.getString(1) ?: continue
+                    if (n.lowercase().contains(name) || name.contains(n.lowercase())) {
+                        number = c.getString(0)
+                        foundName = n
+                        break
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            MaxLog.add("contact search failed: ${e.message}")
+        }
+        if (number == null) {
+            MaxLog.add(">>> no contact for: $name")
+            say("I couldn't find $name in your contacts")
+            return
+        }
+        MaxLog.add(">>> ACTION: calling $foundName ($number)")
+        say("Calling $foundName")
+        try {
+            val dial = Intent(Intent.ACTION_CALL, Uri.parse("tel:${number!!}"))
+            dial.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(dial)
+        } catch (e: Exception) {
+            MaxLog.add("dial failed: ${e.message}")
+            say("I couldn't place the call")
+        }
+    }
+
     private fun getBatteryPercent(): Int {
         return try {
             val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -219,14 +276,11 @@ class ListenerService : Service(), RecognitionListener {
             if (level >= 0 && scale > 0) (level * 100) / scale else -1
         } catch (e: Exception) {
             -1
-        }.also {
-            if (it == -1) MaxLog.add("battery read failed")
         }
     }
 
     private fun openApp(command: String) {
         try {
-            // The name of the app is whatever came after the word "open".
             val target = command.replace("open", " ").trim()
             if (target.isEmpty()) {
                 say("Open what?")
@@ -236,13 +290,11 @@ class ListenerService : Service(), RecognitionListener {
             val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
             val activities = pm.queryIntentActivities(launcherIntent, 0)
 
-            // Some common spoken names map straight to packages.
             val known = mapOf(
                 "whatsapp" to "com.whatsapp",
                 "youtube" to "com.google.android.youtube",
                 "instagram" to "com.instagram.android",
                 "telegram" to "org.telegram.messenger",
-                "camera" to "camera",
                 "chrome" to "com.android.chrome",
                 "gmail" to "com.google.android.gm",
                 "maps" to "com.google.android.maps",
@@ -251,7 +303,7 @@ class ListenerService : Service(), RecognitionListener {
                 "twitter" to "com.twitter.android"
             )
             val pkg = known[target.removePrefix("the ").trim()] ?: ""
-            if (pkg.isNotEmpty() && pkg != "camera") {
+            if (pkg.isNotEmpty()) {
                 val launch = pm.getLaunchIntentForPackage(pkg)
                 if (launch != null) {
                     startActivity(launch)
@@ -260,7 +312,6 @@ class ListenerService : Service(), RecognitionListener {
                 }
             }
 
-            // Otherwise search installed app LABELS for the spoken word.
             val match = activities.firstOrNull {
                 it.loadLabel(pm).toString().lowercase().contains(target) ||
                 target.contains(it.loadLabel(pm).toString().lowercase())
